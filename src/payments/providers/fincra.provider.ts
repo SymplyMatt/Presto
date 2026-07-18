@@ -2,6 +2,7 @@ import { BadGatewayException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac } from 'node:crypto';
 import {
+  bankInfo,
   initializedDeposit,
   initializeDepositInput,
   initiatedWithdrawal,
@@ -133,6 +134,16 @@ export class fincraProvider implements paymentProvider {
       currency: typeof result.currency === 'string' ? result.currency : undefined,
       providerStatus: result.status,
     };
+  }
+
+  async listBanks(): Promise<bankInfo[]> {
+    const banks = await this.get<Array<{ name?: string; code?: string }>>(
+      '/core/banks?currency=NGN',
+      this.apiHeaders(),
+    );
+    return banks
+      .filter((bank) => typeof bank.name === 'string' && typeof bank.code === 'string')
+      .map((bank) => ({ name: bank.name as string, code: bank.code as string }));
   }
 
   verifyAndParseWebhook(

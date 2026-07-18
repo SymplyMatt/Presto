@@ -6,6 +6,7 @@ import { redisCacheService } from '../src/cache/redis-cache.service';
 import { depositsService } from '../src/deposits/deposits.service';
 import { notificationService } from '../src/notifications/notification.service';
 import {
+  bankInfo,
   initializeDepositInput,
   initiateWithdrawalInput,
   paymentProvider,
@@ -41,6 +42,13 @@ class testPaymentProvider implements paymentProvider {
         status: 'pending',
       }
     );
+  }
+
+  async listBanks(): Promise<bankInfo[]> {
+    return [
+      { name: 'Guaranty Trust Bank', code: '058' },
+      { name: 'Paycom (OPay)', code: '999992' },
+    ];
   }
 
   verifyAndParseWebhook(rawBody: Buffer): providerWebhookEvent {

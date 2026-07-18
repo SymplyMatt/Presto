@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { paymentProcessorModel } from '../database/models';
+import { banksController } from './banks.controller';
+import { banksService } from './banks.service';
 import { paymentProvider } from './payment-provider';
 import { paymentProviderRegistry, paymentProvidersToken } from './payment-provider.registry';
 import { paymentProcessorsController } from './payment-processors.controller';
@@ -11,7 +13,7 @@ import { paystackProvider } from './providers/paystack.provider';
 
 @Module({
   imports: [SequelizeModule.forFeature([paymentProcessorModel])],
-  controllers: [paymentProcessorsController],
+  controllers: [paymentProcessorsController, banksController],
   providers: [
     paystackProvider,
     flutterwaveProvider,
@@ -28,6 +30,7 @@ import { paystackProvider } from './providers/paystack.provider';
       ): paymentProvider[] => [paystack, flutterwave, fincra, monnify],
     },
     paymentProviderRegistry,
+    banksService,
   ],
   exports: [paymentProviderRegistry],
 })

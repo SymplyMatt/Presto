@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import {
+  bankInfo,
   initializedDeposit,
   initializeDepositInput,
   initiatedWithdrawal,
@@ -108,6 +109,21 @@ export class paystackProvider implements paymentProvider {
       currency: typeof data.currency === 'string' ? data.currency : undefined,
       providerStatus: data.status,
     };
+  }
+
+  async listBanks(): Promise<bankInfo[]> {
+    const banks = await this.get<
+      Array<{ name?: string; code?: string; active?: boolean; currency?: string }>
+    >('/bank?country=nigeria&perPage=100');
+    return banks
+      .filter(
+        (bank) =>
+          typeof bank.name === 'string' &&
+          typeof bank.code === 'string' &&
+          bank.active !== false &&
+          (!bank.currency || bank.currency === 'NGN'),
+      )
+      .map((bank) => ({ name: bank.name as string, code: bank.code as string }));
   }
 
   verifyAndParseWebhook(

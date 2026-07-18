@@ -54,12 +54,18 @@ export interface verifiedDeposit {
   providerStatus?: string;
 }
 
+export interface bankInfo {
+  name: string;
+  code: string;
+}
+
 export interface paymentProvider {
   readonly name: string;
   isConfigured(): boolean;
   initializeDeposit(input: initializeDepositInput): Promise<initializedDeposit>;
   initiateWithdrawal(input: initiateWithdrawalInput): Promise<initiatedWithdrawal>;
   verifyDeposit(reference: string): Promise<verifiedDeposit>;
+  listBanks(): Promise<bankInfo[]>;
   verifyAndParseWebhook(
     rawBody: Buffer,
     headers: Record<string, string | string[] | undefined>,

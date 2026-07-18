@@ -63,4 +63,29 @@ describe('paystackProvider webhooks', () => {
     );
     fetchMock.mockRestore();
   });
+
+  it('lists Nigerian banks from Paystack', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: true,
+        message: 'Banks retrieved',
+        data: [
+          { name: 'Guaranty Trust Bank', code: '058', active: true, currency: 'NGN' },
+          { name: 'Inactive Bank', code: '000', active: false, currency: 'NGN' },
+          { name: 'Paycom', code: '999992', active: true, currency: 'NGN' },
+        ],
+      }),
+    } as Response);
+
+    await expect(provider.listBanks()).resolves.toEqual([
+      { name: 'Guaranty Trust Bank', code: '058' },
+      { name: 'Paycom', code: '999992' },
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://example.com/bank?country=nigeria&perPage=100',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    fetchMock.mockRestore();
+  });
 });
