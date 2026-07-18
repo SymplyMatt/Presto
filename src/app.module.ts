@@ -14,7 +14,7 @@ import { withdrawalsModule } from './withdrawals/withdrawals.module';
 import { appController } from './app.controller';
 
 const validateEnvironment = (values: Record<string, unknown>) => {
-  const required = ['DATABASE_URL', 'JWT_SECRET', 'PAYSTACK_SECRET_KEY'];
+  const required = ['DATABASE_URL', 'JWT_SECRET'];
   for (const name of required) {
     if (!values[name]) {
       throw new Error(`${name} is required`);

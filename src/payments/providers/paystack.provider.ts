@@ -1,4 +1,9 @@
-import { BadGatewayException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  Injectable,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import {
@@ -8,8 +13,8 @@ import {
   initiateWithdrawalInput,
   paymentProvider,
   providerWebhookEvent,
-  withdrawalRecipientInput,
 } from '../payment-provider';
+import { hasConfig } from './provider-utils';
 
 interface paystackResponse<T> {
   status: boolean;
@@ -25,12 +30,14 @@ interface paystackWebhookBody {
 @Injectable()
 export class paystackProvider implements paymentProvider {
   readonly name = 'paystack';
-  private readonly secretKey: string;
   private readonly baseUrl: string;
 
-  constructor(configService: ConfigService) {
-    this.secretKey = configService.getOrThrow<string>('PAYSTACK_SECRET_KEY');
+  constructor(private readonly configService: ConfigService) {
     this.baseUrl = configService.get('PAYSTACK_BASE_URL', 'https://api.paystack.co');
+  }
+
+  isConfigured(): boolean {
+    return hasConfig(this.configService, ['PAYSTACK_SECRET_KEY']);
   }
 
   async initializeDeposit(input: initializeDepositInput): Promise<initializedDeposit> {
@@ -52,18 +59,19 @@ export class paystackProvider implements paymentProvider {
     };
   }
 
-  async createWithdrawalRecipient(input: withdrawalRecipientInput): Promise<string> {
+  private async createWithdrawalRecipient(input: initiateWithdrawalInput): Promise<string> {
     const data = await this.request<{ recipient_code: string }>('/transferrecipient', {
       type: 'nuban',
-      name: input.accountName,
-      account_number: input.accountNumber,
-      bank_code: input.bankCode,
+      name: input.destination.accountName,
+      account_number: input.destination.accountNumber,
+      bank_code: input.destination.bankCode,
       currency: input.currency,
     });
     return data.recipient_code;
   }
 
   async initiateWithdrawal(input: initiateWithdrawalInput): Promise<initiatedWithdrawal> {
+    const recipientCode = await this.createWithdrawalRecipient(input);
     const data = await this.request<{
       reference: string;
       transfer_code?: string;
@@ -72,7 +80,7 @@ export class paystackProvider implements paymentProvider {
       source: 'balance',
       amount: input.amount,
       currency: input.currency,
-      recipient: input.recipientCode,
+      recipient: recipientCode,
       reference: input.reference,
       reason: input.reason,
     });
@@ -123,7 +131,7 @@ export class paystackProvider implements paymentProvider {
     if (!signature) {
       throw new UnauthorizedException('missing payment webhook signature');
     }
-    const expected = createHmac('sha512', this.secretKey).update(rawBody).digest('hex');
+    const expected = createHmac('sha512', this.secretKey()).update(rawBody).digest('hex');
     const suppliedBuffer = Buffer.from(signature, 'utf8');
     const expectedBuffer = Buffer.from(expected, 'utf8');
     if (
@@ -138,7 +146,7 @@ export class paystackProvider implements paymentProvider {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.secretKey}`,
+        Authorization: `Bearer ${this.secretKey()}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
@@ -149,5 +157,13 @@ export class paystackProvider implements paymentProvider {
       throw new BadGatewayException(result.message || 'payment provider request failed');
     }
     return result.data;
+  }
+
+  private secretKey(): string {
+    const secretKey = this.configService.get<string>('PAYSTACK_SECRET_KEY');
+    if (!secretKey) {
+      throw new ServiceUnavailableException('the active payment processor is not configured');
+    }
+    return secretKey;
   }
 }

@@ -1,8 +1,7 @@
 import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiCookieAuth, ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { jwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { authenticatedUser, currentUser } from '../common/current-user.decorator';
-import { idempotencyKey } from '../common/idempotency-key.decorator';
 import { depositsService } from './deposits.service';
 import { createDepositDto } from './dto/create-deposit.dto';
 
@@ -15,14 +14,9 @@ export class depositsController {
   constructor(private readonly service: depositsService) {}
 
   @Post()
-  @ApiHeader({ name: 'Idempotency-Key', required: false })
-  @ApiOperation({ summary: 'Initialize a Paystack deposit' })
-  create(
-    @currentUser() user: authenticatedUser,
-    @idempotencyKey() key: string,
-    @Body() input: createDepositDto,
-  ) {
-    return this.service.create(user.userId, user.email, key, input);
+  @ApiOperation({ summary: 'Initialize a deposit with the active payment processor' })
+  create(@currentUser() user: authenticatedUser, @Body() input: createDepositDto) {
+    return this.service.create(user.userId, user.email, input);
   }
 
   @Get(':id')

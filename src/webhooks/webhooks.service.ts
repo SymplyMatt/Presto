@@ -44,7 +44,7 @@ export class webhooksService {
     rawBody: Buffer,
     headers: Record<string, string | string[] | undefined>,
   ): Promise<Omit<webhookResult, 'userId' | 'email' | 'activity' | 'details'>> {
-    const provider = this.providers.getActive();
+    const provider = await this.providers.getActive();
     const event = provider.verifyAndParseWebhook(rawBody, headers);
     const result = await this.routeEvent(provider, event);
 
@@ -121,6 +121,7 @@ export class webhooksService {
           balanceAfter: Number(wallet.balance),
           referenceType: 'deposit',
           referenceId: deposit.id,
+          paymentProcessorName: providerName,
         },
         { transaction },
       );
@@ -237,6 +238,7 @@ export class webhooksService {
         balanceAfter: Number(wallet.balance),
         referenceType: 'withdrawal',
         referenceId: withdrawal.id,
+        paymentProcessorName: providerName,
       },
       { transaction },
     );

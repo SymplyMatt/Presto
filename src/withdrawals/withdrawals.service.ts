@@ -3,23 +3,20 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { randomUUID } from 'node:crypto';
-import { Transaction } from 'sequelize';
+import { Op, Transaction } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { currency, ensureSafeMoney } from '../common/money';
+import { recentTransactionCutoff, recentTransactionMessage } from '../common/recent-transaction';
 import { ledgerEntryModel, walletModel, withdrawalModel } from '../database/models';
 import { notificationService } from '../notifications/notification.service';
 import { paymentProvider } from '../payments/payment-provider';
 import { paymentProviderRegistry } from '../payments/payment-provider.registry';
 import { walletsService } from '../wallets/wallets.service';
 import { createWithdrawalDto } from './dto/create-withdrawal.dto';
-
-interface reservedWithdrawal {
-  withdrawal: withdrawalModel;
-  replayed: boolean;
-}
 
 export interface withdrawalView {
   id: string;
@@ -28,12 +25,11 @@ export interface withdrawalView {
   bankCode: string;
   accountNumberLastFour: string;
   accountName: string;
-  provider: string;
+  paymentProcessor: string;
   reference: string;
   status: string;
   createdAt: Date;
   completedAt: Date | null;
-  replayed: boolean;
 }
 
 @Injectable()
@@ -48,59 +44,42 @@ export class withdrawalsService {
     private readonly notifications: notificationService,
   ) {}
 
-  async create(
-    userId: string,
-    email: string,
-    key: string,
-    input: createWithdrawalDto,
-  ): Promise<withdrawalView> {
+  async create(userId: string, email: string, input: createWithdrawalDto): Promise<withdrawalView> {
     ensureSafeMoney(input.amount);
     const wallet = await this.wallets.getByUserId(userId);
-    const existing = await this.withdrawals.findOne({
-      where: { walletId: wallet.id, idempotencyKey: key },
-    });
-    if (existing) {
-      return this.toView(existing, true);
-    }
-
-    const provider = this.providers.getActive();
-    const recipientCode = await provider.createWithdrawalRecipient({
-      accountName: input.accountName.trim(),
-      accountNumber: input.accountNumber,
-      bankCode: input.bankCode,
-      currency,
-    });
+    const provider = await this.providers.getActive();
     const providerReference = `wd-${randomUUID()}`;
-    const result = await this.sequelize.transaction((transaction) =>
-      this.reserve(transaction, wallet.id, key, provider, providerReference, recipientCode, input),
+    const withdrawal = await this.sequelize.transaction((transaction) =>
+      this.reserve(transaction, wallet.id, provider, providerReference, input),
     );
-    if (result.replayed) {
-      return this.toView(result.withdrawal, true);
-    }
 
     await Promise.all([
       this.wallets.invalidate(userId),
       this.notifications.notify(email, 'wallet.withdrawal.requested', {
         amount: input.amount,
-        withdrawalId: result.withdrawal.id,
+        withdrawalId: withdrawal.id,
       }),
     ]);
 
     try {
       const initiated = await provider.initiateWithdrawal({
-        amount: Number(result.withdrawal.amount),
-        currency: result.withdrawal.currency,
-        recipientCode,
+        amount: Number(withdrawal.amount),
+        currency: withdrawal.currency,
         reference: providerReference,
+        destination: {
+          accountName: input.accountName.trim(),
+          accountNumber: input.accountNumber,
+          bankCode: input.bankCode,
+        },
         reason: input.reason,
       });
-      result.withdrawal.providerTransferCode = initiated.transferCode ?? null;
-      result.withdrawal.status = 'processing';
-      await result.withdrawal.save();
-      return this.toView(result.withdrawal, false);
+      withdrawal.providerTransferCode = initiated.transferCode ?? null;
+      withdrawal.status = 'processing';
+      await withdrawal.save();
+      return this.toView(withdrawal);
     } catch (error) {
-      if (error instanceof BadGatewayException) {
-        await this.refundRejectedWithdrawal(result.withdrawal.id);
+      if (error instanceof BadGatewayException || error instanceof ServiceUnavailableException) {
+        await this.refundRejectedWithdrawal(withdrawal.id);
         await this.wallets.invalidate(userId);
       }
       throw error;
@@ -113,18 +92,16 @@ export class withdrawalsService {
     if (!withdrawal) {
       throw new NotFoundException('withdrawal not found');
     }
-    return this.toView(withdrawal, false);
+    return this.toView(withdrawal);
   }
 
   private async reserve(
     transaction: Transaction,
     walletId: string,
-    key: string,
     provider: paymentProvider,
     providerReference: string,
-    recipientCode: string,
     input: createWithdrawalDto,
-  ): Promise<reservedWithdrawal> {
+  ): Promise<withdrawalModel> {
     const wallet = await this.walletRecords.findByPk(walletId, {
       transaction,
       lock: transaction.LOCK.UPDATE,
@@ -132,12 +109,18 @@ export class withdrawalsService {
     if (!wallet) {
       throw new NotFoundException('wallet not found');
     }
-    const existing = await this.withdrawals.findOne({
-      where: { walletId, idempotencyKey: key },
+    const recent = await this.withdrawals.findOne({
+      where: {
+        walletId,
+        amount: input.amount,
+        bankCode: input.bankCode,
+        accountNumberLastFour: input.accountNumber.slice(-4),
+        createdAt: { [Op.gte]: recentTransactionCutoff() },
+      },
       transaction,
     });
-    if (existing) {
-      return { withdrawal: existing, replayed: true };
+    if (recent) {
+      throw new ConflictException(recentTransactionMessage);
     }
 
     const balance = Number(wallet.balance);
@@ -154,10 +137,10 @@ export class withdrawalsService {
         bankCode: input.bankCode,
         accountNumberLastFour: input.accountNumber.slice(-4),
         accountName: input.accountName.trim(),
-        recipientCode,
+        recipientCode: null,
         providerName: provider.name,
         providerReference,
-        idempotencyKey: key,
+        idempotencyKey: randomUUID(),
         status: 'pending',
         reason: input.reason ?? null,
       },
@@ -173,10 +156,11 @@ export class withdrawalsService {
         balanceAfter: Number(wallet.balance),
         referenceType: 'withdrawal',
         referenceId: withdrawal.id,
+        paymentProcessorName: provider.name,
       },
       { transaction },
     );
-    return { withdrawal, replayed: false };
+    return withdrawal;
   }
 
   private async refundRejectedWithdrawal(id: string): Promise<void> {
@@ -207,13 +191,14 @@ export class withdrawalsService {
           balanceAfter: Number(wallet.balance),
           referenceType: 'withdrawal',
           referenceId: withdrawal.id,
+          paymentProcessorName: withdrawal.providerName,
         },
         { transaction },
       );
     });
   }
 
-  private toView(withdrawal: withdrawalModel, replayed: boolean): withdrawalView {
+  private toView(withdrawal: withdrawalModel): withdrawalView {
     return {
       id: withdrawal.id,
       amount: Number(withdrawal.amount),
@@ -221,12 +206,11 @@ export class withdrawalsService {
       bankCode: withdrawal.bankCode,
       accountNumberLastFour: withdrawal.accountNumberLastFour,
       accountName: withdrawal.accountName,
-      provider: withdrawal.providerName,
+      paymentProcessor: withdrawal.providerName,
       reference: withdrawal.providerReference,
       status: withdrawal.status,
       createdAt: withdrawal.createdAt,
       completedAt: withdrawal.completedAt,
-      replayed,
     };
   }
 }

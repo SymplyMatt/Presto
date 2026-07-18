@@ -48,8 +48,8 @@ export class withdrawalModel extends Model<
   @Column({ type: DataType.STRING, allowNull: false, field: 'account_name' })
   declare accountName: string;
 
-  @Column({ type: DataType.STRING, allowNull: false, field: 'recipient_code' })
-  declare recipientCode: string;
+  @Column({ type: DataType.STRING, allowNull: true, field: 'recipient_code' })
+  declare recipientCode: CreationOptional<string | null>;
 
   @Column({ type: DataType.STRING(30), allowNull: false, field: 'provider_name' })
   declare providerName: string;

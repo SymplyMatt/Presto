@@ -1,13 +1,15 @@
-import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
 import { InjectModel } from '@nestjs/sequelize';
 import { Queue } from 'bullmq';
 import { randomUUID } from 'node:crypto';
-import { UniqueConstraintError } from 'sequelize';
+import { Op, Transaction } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { currency, ensureSafeMoney } from '../common/money';
-import { depositModel } from '../database/models';
+import { recentTransactionCutoff, recentTransactionMessage } from '../common/recent-transaction';
+import { depositModel, walletModel } from '../database/models';
+import { paymentProvider } from '../payments/payment-provider';
 import { paymentProviderRegistry } from '../payments/payment-provider.registry';
 import { walletsService } from '../wallets/wallets.service';
 import { createDepositDto } from './dto/create-deposit.dto';
@@ -22,7 +24,7 @@ export interface depositView {
   id: string;
   amount: number;
   currency: string;
-  provider: string;
+  paymentProcessor: string;
   reference: string;
   status: string;
   checkoutUrl: string | null;
@@ -37,6 +39,7 @@ export class depositsService {
   constructor(
     private readonly sequelize: Sequelize,
     @InjectModel(depositModel) private readonly deposits: typeof depositModel,
+    @InjectModel(walletModel) private readonly walletRecords: typeof walletModel,
     private readonly wallets: walletsService,
     private readonly providers: paymentProviderRegistry,
     private readonly configService: ConfigService,
@@ -45,44 +48,13 @@ export class depositsService {
     private readonly expireQueue?: Queue<depositExpireJob>,
   ) {}
 
-  async create(
-    userId: string,
-    email: string,
-    key: string,
-    input: createDepositDto,
-  ): Promise<depositView> {
+  async create(userId: string, email: string, input: createDepositDto): Promise<depositView> {
     ensureSafeMoney(input.amount);
     const wallet = await this.wallets.getByUserId(userId);
-    const existing = await this.deposits.findOne({
-      where: { walletId: wallet.id, idempotencyKey: key },
-    });
-    if (existing) {
-      return this.toView(existing);
-    }
-
-    const provider = this.providers.getActive();
-    let deposit: depositModel;
-    try {
-      deposit = await this.deposits.create({
-        walletId: wallet.id,
-        amount: input.amount,
-        currency,
-        providerName: provider.name,
-        providerReference: `dep-${randomUUID()}`,
-        idempotencyKey: key,
-        status: 'pending',
-      });
-    } catch (error) {
-      if (error instanceof UniqueConstraintError) {
-        const replayed = await this.deposits.findOne({
-          where: { walletId: wallet.id, idempotencyKey: key },
-        });
-        if (replayed) {
-          return this.toView(replayed);
-        }
-      }
-      throw error;
-    }
+    const provider = await this.providers.getActive();
+    const deposit = await this.sequelize.transaction((transaction) =>
+      this.createPending(transaction, wallet.id, provider, input),
+    );
 
     try {
       const initialized = await provider.initializeDeposit({
@@ -93,7 +65,7 @@ export class depositsService {
         callbackUrl: `${this.configService.get('APP_BASE_URL', 'http://localhost:3000')}/docs`,
       });
       deposit.checkoutUrl = initialized.checkoutUrl;
-      deposit.accessCode = initialized.accessCode;
+      deposit.accessCode = initialized.accessCode ?? null;
       await deposit.save();
       await this.scheduleExpiry(deposit.id);
       return this.toView(deposit);
@@ -102,6 +74,45 @@ export class depositsService {
       await deposit.save();
       throw error;
     }
+  }
+
+  private async createPending(
+    transaction: Transaction,
+    walletId: string,
+    provider: paymentProvider,
+    input: createDepositDto,
+  ): Promise<depositModel> {
+    const wallet = await this.walletRecords.findByPk(walletId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (!wallet) {
+      throw new NotFoundException('wallet not found');
+    }
+    const recent = await this.deposits.findOne({
+      where: {
+        walletId,
+        amount: input.amount,
+        currency,
+        createdAt: { [Op.gte]: recentTransactionCutoff() },
+      },
+      transaction,
+    });
+    if (recent) {
+      throw new ConflictException(recentTransactionMessage);
+    }
+    return this.deposits.create(
+      {
+        walletId,
+        amount: input.amount,
+        currency,
+        providerName: provider.name,
+        providerReference: `dep-${randomUUID()}`,
+        idempotencyKey: randomUUID(),
+        status: 'pending',
+      },
+      { transaction },
+    );
   }
 
   async get(userId: string, id: string): Promise<depositView> {
@@ -132,9 +143,7 @@ export class depositsService {
     if (!this.expireQueue) {
       return;
     }
-    const ttlSeconds = Number(
-      this.configService.get('DEPOSIT_PENDING_TTL_SECONDS', 3600),
-    );
+    const ttlSeconds = Number(this.configService.get('DEPOSIT_PENDING_TTL_SECONDS', 3600));
     if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
       this.logger.warn('DEPOSIT_PENDING_TTL_SECONDS must be a positive number; skipping expiry');
       return;
@@ -160,7 +169,7 @@ export class depositsService {
       id: deposit.id,
       amount: Number(deposit.amount),
       currency: deposit.currency,
-      provider: deposit.providerName,
+      paymentProcessor: deposit.providerName,
       reference: deposit.providerReference,
       status: deposit.status,
       checkoutUrl: deposit.checkoutUrl,

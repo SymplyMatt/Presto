@@ -9,21 +9,20 @@ export interface initializeDepositInput {
 export interface initializedDeposit {
   reference: string;
   checkoutUrl: string;
-  accessCode: string;
+  accessCode?: string;
 }
 
-export interface withdrawalRecipientInput {
+export interface withdrawalDestination {
   accountName: string;
   accountNumber: string;
   bankCode: string;
-  currency: string;
 }
 
 export interface initiateWithdrawalInput {
   amount: number;
   currency: string;
-  recipientCode: string;
   reference: string;
+  destination: withdrawalDestination;
   reason?: string;
 }
 
@@ -47,8 +46,8 @@ export interface providerWebhookEvent {
 
 export interface paymentProvider {
   readonly name: string;
+  isConfigured(): boolean;
   initializeDeposit(input: initializeDepositInput): Promise<initializedDeposit>;
-  createWithdrawalRecipient(input: withdrawalRecipientInput): Promise<string>;
   initiateWithdrawal(input: initiateWithdrawalInput): Promise<initiatedWithdrawal>;
   verifyAndParseWebhook(
     rawBody: Buffer,

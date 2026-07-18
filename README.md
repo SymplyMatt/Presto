@@ -1,6 +1,6 @@
 # Wallet and Payments API
 
-A NestJS API for registering users, funding an NGN wallet through Paystack, transferring to another user, and withdrawing to a Nigerian bank account. PostgreSQL is the source of truth for balances and ledger history; Redis is used for short-lived reads and BullMQ jobs.
+A NestJS API for registering users, funding an NGN wallet with the active payment processor, transferring to another user, and withdrawing to a Nigerian bank account. PostgreSQL is the source of truth for balances, ledger history, and payment-processor selection; Redis is used for short-lived reads and BullMQ jobs.
 
 The submission deadline is interpreted in **Africa/Lagos (WAT, UTC+1)**: Saturday, July 18, 2026 at 11:59 PM.
 
@@ -10,13 +10,13 @@ The submission deadline is interpreted in **Africa/Lagos (WAT, UTC+1)**: Saturda
 - PostgreSQL, Sequelize models, and Umzug migrations
 - Redis for wallet-view caching
 - BullMQ for asynchronous mock email notifications
-- Paystack behind a payment-provider interface and active-provider registry
+- Payment-processor adapters selected through a PostgreSQL-backed registry
 - JWT authentication and bcrypt password hashing
 - Swagger/OpenAPI at `/docs` and `/docs/openapi.json`
 
 ## Run locally
 
-Requirements: Node.js 22+, npm, PostgreSQL 16+, Redis 7+, and a Paystack test secret key.
+Requirements: Node.js 22+, npm, PostgreSQL 16+, Redis 7+, and credentials for the active payment processor.
 
 Start PostgreSQL and Redis with your operating system's service manager, create a PostgreSQL database, and set its connection string in `.env`.
 
@@ -27,13 +27,15 @@ npm run migration:run
 npm run start:dev
 ```
 
-Set `PAYSTACK_SECRET_KEY` in `.env` before starting. The API runs at `http://localhost:3000/api/v1`, Swagger at `http://localhost:3000/docs`, and the Paystack webhook URL is:
+Paystack is the initially active payment processor, so set `PAYSTACK_SECRET_KEY` in `.env` before making payment requests. The API runs at `http://localhost:3000/api/v1`, Swagger at `http://localhost:3000/docs`, and the payment webhook URL is:
 
 ```text
 https://your-public-host/api/v1/webhooks/payments
 ```
 
-The webhook route is provider-neutral. `PAYMENT_PROVIDER=paystack` selects Paystack today. A second provider can be added by implementing `paymentProvider`, registering it in `paymentsModule`, and adding it to `paymentProviderRegistry`; wallet and webhook business logic does not depend on Paystack payloads.
+The webhook route and wallet services are processor-neutral. PostgreSQL stores Flutterwave, Paystack, Fincra, and Monnify in the processor registry. Paystack is seeded as active; the others are seeded as inactive. Business services query the active row and resolve its adapter before every external payment operation. Each supported processor has working checkout, payout, and signed-webhook implementations.
+
+Use `GET /api/v1/payment-processors` to list the registry, active state, and configuration readiness. Use `PATCH /api/v1/payment-processors/:name/activate` to change the active processor. Both endpoints require authentication. Activation is rejected until every required credential for that processor is present, leaving the current processor active. Processor-specific payloads, credentials, URLs, and webhook verification belong only inside the corresponding adapter.
 
 ## Environment
 
@@ -45,9 +47,11 @@ The webhook route is provider-neutral. `PAYMENT_PROVIDER=paystack` selects Payst
 | `JWT_SECRET` | JWT signing secret, at least 32 random characters recommended |
 | `JWT_EXPIRES_IN_SECONDS` | Access-token lifetime in seconds, default `3600` |
 | `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` | Redis connection |
-| `PAYMENT_PROVIDER` | Active provider name; currently `paystack` |
-| `PAYSTACK_SECRET_KEY` | Paystack server-side secret key and webhook signing key |
-| `PAYSTACK_BASE_URL` | Defaults to `https://api.paystack.co` |
+| `PAYSTACK_SECRET_KEY`, `PAYSTACK_BASE_URL` | Paystack secret key and optional API URL override |
+| `FLUTTERWAVE_SECRET_KEY`, `FLUTTERWAVE_WEBHOOK_SECRET`, `FLUTTERWAVE_BASE_URL` | Flutterwave API and webhook credentials, plus optional API URL override |
+| `FINCRA_SECRET_KEY`, `FINCRA_PUBLIC_KEY`, `FINCRA_BUSINESS_ID`, `FINCRA_WEBHOOK_SECRET`, `FINCRA_BASE_URL` | Fincra API, business, and webhook credentials, plus optional API URL override |
+| `MONNIFY_API_KEY`, `MONNIFY_SECRET_KEY`, `MONNIFY_CONTRACT_CODE`, `MONNIFY_SOURCE_ACCOUNT_NUMBER`, `MONNIFY_BASE_URL` | Monnify collection and disbursement credentials, plus optional API URL override |
+| `MONNIFY_ALLOW_UNSIGNED_SANDBOX_WEBHOOKS` | Opt in to Monnify's unsigned sandbox webhooks outside production; default `false` |
 | `APP_BASE_URL` | Public application URL used for payment callbacks |
 | `CORS_ORIGINS` | Comma-separated browser origins allowed to send credentialed requests |
 
@@ -63,13 +67,13 @@ All monetary values are positive integer **kobo**. Only NGN is supported.
 
 1. `POST /api/v1/auth/register` creates a user and zero-balance wallet.
 2. `POST /api/v1/auth/login` returns a bearer token and sets the JWT session cookie.
-3. `POST /api/v1/deposits` creates a pending deposit and returns a Paystack checkout URL.
-4. Paystack sends `charge.success` to `POST /api/v1/webhooks/payments`; only a valid signature and exact reference/amount/currency match can credit the wallet.
+3. `POST /api/v1/deposits` creates a pending deposit with the active payment processor and returns its checkout URL.
+4. The active payment processor sends a signed event to `POST /api/v1/webhooks/payments`; only a valid signature and exact reference/amount/currency match can credit the wallet.
 5. `POST /api/v1/transfers` moves money between platform wallets atomically.
-6. `POST /api/v1/withdrawals` reserves the wallet funds and initiates a Paystack transfer to the bank account.
+6. `POST /api/v1/withdrawals` reserves wallet funds and initiates a payout with the active payment processor.
 7. `GET /api/v1/wallet` returns the cached wallet view; `GET /api/v1/wallet/ledger` returns the PostgreSQL audit history.
 
-Send an optional `Idempotency-Key` header on deposit, transfer, and withdrawal requests. Reusing a key for the same wallet returns the existing operation. If omitted, the API assigns a new UUID, so clients should provide one for safe retries.
+Clients do not send idempotency keys. The API rejects a similar deposit, transfer, or withdrawal when the same user attempted it during the preceding two minutes. The check runs inside the same database transaction and wallet lock used for the financial operation, including concurrent requests.
 
 Example registration and transfer:
 
@@ -80,7 +84,6 @@ curl -X POST http://localhost:3000/api/v1/auth/register \
 
 curl -X POST http://localhost:3000/api/v1/transfers \
   -H 'Authorization: Bearer YOUR_TOKEN' \
-  -H 'Idempotency-Key: transfer-2026-0001' \
   -H 'Content-Type: application/json' \
   -d '{"recipientUsername":"grace","amount":250000,"description":"Lunch"}'
 ```
@@ -102,7 +105,9 @@ curl -b cookies.txt http://localhost:3000/api/v1/wallet
 - A Sequelize-managed PostgreSQL transaction and `FOR UPDATE` wallet lock serialize every debit.
 - Internal transfers lock both wallets in stable UUID order, update both balances, and append both ledger sides atomically.
 - Withdrawal funds are reserved before calling the payout endpoint, preventing concurrent double-spend.
-- Provider references, client idempotency keys, provider event IDs, and ledger operation entries have database uniqueness constraints.
+- Processor references, internally generated operation keys, processor event IDs, and ledger operation entries have database uniqueness constraints.
+- Every externally processed deposit, withdrawal, and related ledger entry stores the payment processor used at creation time.
+- A PostgreSQL partial unique index and transactional row locks ensure the processor registry has at most one active row.
 - Deposit credit occurs only after a verified webhook whose reference, amount, and currency match the pending record.
 - An unconfirmed deposit stays pending and never changes the wallet; after `DEPOSIT_PENDING_TTL_SECONDS` (default 1 hour) it is marked `failed` automatically. A late verified success webhook can still credit an expired deposit. Duplicate success webhooks return 200 without a second credit.
 - Redis is never authoritative: cache failures degrade to PostgreSQL reads and every committed balance change invalidates the wallet key.
@@ -139,10 +144,13 @@ npm run build
 
 ## Operational notes
 
-- Configure the webhook URL in the Paystack dashboard and keep the route publicly reachable over HTTPS.
-- Paystack webhook signatures use HMAC-SHA512 with the secret key and are checked with a timing-safe comparison before JSON event processing.
-- Provider timeouts leave reserved withdrawals pending for reconciliation; an explicit rejected provider response is compensated with a ledgered refund.
+- Configure the webhook URL with the active payment processor and keep the route publicly reachable over HTTPS.
+- The active adapter verifies its processor-specific webhook signature before returning a normalized event to the webhook service. All signature comparisons are timing-safe.
+- Flutterwave, Fincra, and Monnify express API amounts in major currency units. Their adapters convert from and back to the API's integer-kobo contract at the boundary. Paystack uses kobo directly.
+- Automated Monnify withdrawals require disbursement access, a live-environment IP whitelist, and MFA disabled for the source wallet. Otherwise Monnify can return a payout that requires manual authorization.
+- Monnify omits its signature header in sandbox. Set `MONNIFY_ALLOW_UNSIGNED_SANDBOX_WEBHOOKS=true` only for sandbox testing; production always requires a valid signature regardless of this setting.
+- Processor timeouts leave reserved withdrawals pending for reconciliation; an explicit rejected response is compensated with a ledgered refund.
 - Mock emails are written by the BullMQ worker to application logs. Replace only the processor implementation when adopting a real email vendor.
 - Run migrations as a release step before starting the application. Do not enable `DB_SYNCHRONIZE` in production.
 
-The provider integration follows Paystack's official [transaction initialization](https://paystack.com/docs/api/transaction/), [transfer recipient](https://paystack.com/docs/api/transfer-recipient/), [transfer](https://paystack.com/docs/api/transfer/), and [webhook verification](https://paystack.com/docs/payments/webhooks/) documentation.
+The adapters follow the processors' official checkout, transfer, and webhook contracts: [Paystack](https://paystack.com/docs/payments/), [Flutterwave](https://developer.flutterwave.com/v3.0/docs/flutterwave-standard-1), [Fincra](https://docs.fincra.com/docs/cross-currency-checkout-integration-flow), and [Monnify](https://developers.monnify.com/docs/collections/one-time-payments/checkout-api). Core wallet, transaction, registry, and webhook services do not depend on any processor-specific payload.

@@ -10,12 +10,15 @@ import {
   initiateWithdrawalInput,
   paymentProvider,
   providerWebhookEvent,
-  withdrawalRecipientInput,
 } from '../src/payments/payment-provider';
-import { paymentProviderRegistry } from '../src/payments/payment-provider.registry';
+import { paymentProvidersToken } from '../src/payments/payment-provider.registry';
 
 class testPaymentProvider implements paymentProvider {
   readonly name = 'paystack';
+
+  isConfigured(): boolean {
+    return true;
+  }
 
   async initializeDeposit(input: initializeDepositInput) {
     return {
@@ -23,10 +26,6 @@ class testPaymentProvider implements paymentProvider {
       checkoutUrl: `https://checkout.test/${input.reference}`,
       accessCode: 'access-code',
     };
-  }
-
-  async createWithdrawalRecipient(_input: withdrawalRecipientInput) {
-    return 'RCP_test';
   }
 
   async initiateWithdrawal(input: initiateWithdrawalInput) {
@@ -58,8 +57,8 @@ describe('financial evaluation scenarios', () => {
     const provider = new testPaymentProvider();
     const cache = new Map<string, unknown>();
     const module = await Test.createTestingModule({ imports: [appModule] })
-      .overrideProvider(paymentProviderRegistry)
-      .useValue({ getActive: () => provider })
+      .overrideProvider(paymentProvidersToken)
+      .useValue([provider])
       .overrideProvider(notificationService)
       .useValue({ notify: async () => undefined })
       .overrideProvider(redisCacheService)
@@ -99,10 +98,14 @@ describe('financial evaluation scenarios', () => {
     const response = await request(app.getHttpServer())
       .post('/api/v1/deposits')
       .auth(token, { type: 'bearer' })
-      .set('Idempotency-Key', `deposit-${Date.now()}-${Math.random()}`)
       .send({ amount })
       .expect(201);
-    return response.body as { id: string; reference: string; status: string };
+    return response.body as {
+      id: string;
+      reference: string;
+      status: string;
+      paymentProcessor: string;
+    };
   };
 
   const confirmDeposit = async (reference: string, amount: number) => {
@@ -116,15 +119,13 @@ describe('financial evaluation scenarios', () => {
   it('authenticates with the HTTP-only JWT cookie', async () => {
     const user = await register('cookie');
     expect(user.cookie).toContain('accessToken=');
-    await request(app.getHttpServer())
-      .get('/api/v1/wallet')
-      .set('Cookie', user.cookie)
-      .expect(200);
+    await request(app.getHttpServer()).get('/api/v1/wallet').set('Cookie', user.cookie).expect(200);
   });
 
   it('credits a duplicate webhook exactly once', async () => {
     const user = await register('duplicate');
     const deposit = await initializeDeposit(user.token, 1000);
+    expect(deposit.paymentProcessor).toBe('paystack');
     const body = {
       event: 'charge.success',
       data: { id: eventId++, reference: deposit.reference, amount: 1000, currency: 'NGN' },
@@ -138,6 +139,11 @@ describe('financial evaluation scenarios', () => {
     expect(responses.filter((response) => response.body.processed).length).toBe(1);
     expect(responses.filter((response) => response.body.duplicate).length).toBe(1);
     expect((await wallet(user.token).expect(200)).body.balance).toBe(1000);
+    const ledger = await request(app.getHttpServer())
+      .get('/api/v1/wallet/ledger')
+      .auth(user.token, { type: 'bearer' })
+      .expect(200);
+    expect(ledger.body.items[0].paymentProcessor).toBe('paystack');
   });
 
   it('leaves an unconfirmed deposit pending without changing the balance', async () => {
@@ -151,6 +157,36 @@ describe('financial evaluation scenarios', () => {
       .auth(user.token, { type: 'bearer' })
       .expect(200);
     expect(status.body.status).toBe('pending');
+  });
+
+  it('rejects a similar deposit attempted within two minutes', async () => {
+    const user = await register('recent_deposit');
+    await initializeDeposit(user.token, 850);
+    await request(app.getHttpServer())
+      .post('/api/v1/deposits')
+      .auth(user.token, { type: 'bearer' })
+      .send({ amount: 850 })
+      .expect(409);
+  });
+
+  it('lists the supported processors and identifies the active processor', async () => {
+    const user = await register('processors');
+    const response = await request(app.getHttpServer())
+      .get('/api/v1/payment-processors')
+      .auth(user.token, { type: 'bearer' })
+      .expect(200);
+
+    const processors = response.body as { name: string; displayName: string; isActive: boolean }[];
+    expect(processors).toHaveLength(4);
+    expect(processors.find((processor) => processor.name === 'paystack')).toMatchObject({
+      displayName: 'Paystack',
+      isActive: true,
+    });
+
+    await request(app.getHttpServer())
+      .patch('/api/v1/payment-processors/paystack/activate')
+      .auth(user.token, { type: 'bearer' })
+      .expect(200);
   });
 
   it('marks an unconfirmed deposit failed on expiry without changing the balance', async () => {
@@ -179,16 +215,26 @@ describe('financial evaluation scenarios', () => {
       request(app.getHttpServer())
         .post('/api/v1/transfers')
         .auth(sender.token, { type: 'bearer' })
-        .set('Idempotency-Key', 'concurrent-transfer-a')
         .send({ recipientUsername: firstRecipient.username, amount: 700 }),
       request(app.getHttpServer())
         .post('/api/v1/transfers')
         .auth(sender.token, { type: 'bearer' })
-        .set('Idempotency-Key', 'concurrent-transfer-b')
         .send({ recipientUsername: secondRecipient.username, amount: 700 }),
     ]);
 
     expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
+    const successfulIndex = responses.findIndex((response) => response.status === 201);
+    const successfulRecipient = [firstRecipient.username, secondRecipient.username][
+      successfulIndex
+    ];
+    const repeated = await request(app.getHttpServer())
+      .post('/api/v1/transfers')
+      .auth(sender.token, { type: 'bearer' })
+      .send({ recipientUsername: successfulRecipient, amount: 700 })
+      .expect(409);
+    expect(repeated.body.message).toBe(
+      'a similar transaction was attempted within the last two minutes',
+    );
     expect((await wallet(sender.token).expect(200)).body.balance).toBe(300);
   });
 
@@ -207,16 +253,18 @@ describe('financial evaluation scenarios', () => {
       request(app.getHttpServer())
         .post('/api/v1/withdrawals')
         .auth(user.token, { type: 'bearer' })
-        .set('Idempotency-Key', 'concurrent-withdrawal-a')
         .send(input),
       request(app.getHttpServer())
         .post('/api/v1/withdrawals')
         .auth(user.token, { type: 'bearer' })
-        .set('Idempotency-Key', 'concurrent-withdrawal-b')
         .send(input),
     ]);
 
     expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
+    const blocked = responses.find((response) => response.status === 409);
+    expect(blocked?.body.message).toBe(
+      'a similar transaction was attempted within the last two minutes',
+    );
     expect((await wallet(user.token).expect(200)).body.balance).toBe(300);
   });
 });

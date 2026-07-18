@@ -48,6 +48,9 @@ export class ledgerEntryModel extends Model<
   @Column({ type: DataType.STRING, allowNull: false, field: 'reference_id' })
   declare referenceId: string;
 
+  @Column({ type: DataType.STRING(30), allowNull: true, field: 'payment_processor_name' })
+  declare paymentProcessorName: CreationOptional<string | null>;
+
   @CreatedAt
   declare createdAt: CreationOptional<Date>;
 }

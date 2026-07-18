@@ -21,10 +21,7 @@ export class authController {
     description:
       'Returns a JWT in the body and sets the HTTP-only `accessToken` cookie used by Swagger on later requests.',
   })
-  async register(
-    @Body() input: registerDto,
-    @Res({ passthrough: true }) response: Response,
-  ) {
+  async register(@Body() input: registerDto, @Res({ passthrough: true }) response: Response) {
     const session = await this.service.register(input);
     this.setSessionCookie(response, session.accessToken);
     return session;

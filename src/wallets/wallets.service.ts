@@ -58,11 +58,15 @@ export class walletsService {
       offset: (safePage - 1) * safeLimit,
       limit: safeLimit,
     });
-    const items = result.rows.map((entry) => ({
-      ...entry.toJSON(),
-      amount: Number(entry.amount),
-      balanceAfter: Number(entry.balanceAfter),
-    }));
+    const items = result.rows.map((entry) => {
+      const { paymentProcessorName, ...item } = entry.toJSON();
+      return {
+        ...item,
+        amount: Number(entry.amount),
+        balanceAfter: Number(entry.balanceAfter),
+        paymentProcessor: paymentProcessorName,
+      };
+    });
     return { items, total: result.count, page: safePage, limit: safeLimit };
   }
 

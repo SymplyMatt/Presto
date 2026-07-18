@@ -1,8 +1,7 @@
 import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiCookieAuth, ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { jwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { authenticatedUser, currentUser } from '../common/current-user.decorator';
-import { idempotencyKey } from '../common/idempotency-key.decorator';
 import { createWithdrawalDto } from './dto/create-withdrawal.dto';
 import { withdrawalsService } from './withdrawals.service';
 
@@ -15,14 +14,9 @@ export class withdrawalsController {
   constructor(private readonly service: withdrawalsService) {}
 
   @Post()
-  @ApiHeader({ name: 'Idempotency-Key', required: false })
-  @ApiOperation({ summary: 'Withdraw from the wallet to a Nigerian bank account' })
-  create(
-    @currentUser() user: authenticatedUser,
-    @idempotencyKey() key: string,
-    @Body() input: createWithdrawalDto,
-  ) {
-    return this.service.create(user.userId, user.email, key, input);
+  @ApiOperation({ summary: 'Withdraw through the active payment processor' })
+  create(@currentUser() user: authenticatedUser, @Body() input: createWithdrawalDto) {
+    return this.service.create(user.userId, user.email, input);
   }
 
   @Get(':id')

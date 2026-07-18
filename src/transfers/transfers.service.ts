@@ -5,18 +5,15 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
+import { randomUUID } from 'node:crypto';
 import { Op, Transaction } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { currency, ensureSafeMoney } from '../common/money';
+import { recentTransactionCutoff, recentTransactionMessage } from '../common/recent-transaction';
 import { ledgerEntryModel, transferModel, userModel, walletModel } from '../database/models';
 import { notificationService } from '../notifications/notification.service';
 import { walletsService } from '../wallets/wallets.service';
 import { createTransferDto } from './dto/create-transfer.dto';
-
-interface completedTransfer {
-  transfer: transferModel;
-  replayed: boolean;
-}
 
 export interface transferView {
   id: string;
@@ -25,7 +22,6 @@ export interface transferView {
   status: string;
   description: string | null;
   createdAt: Date;
-  replayed: boolean;
 }
 
 @Injectable()
@@ -43,7 +39,6 @@ export class transfersService {
   async create(
     senderId: string,
     senderEmail: string,
-    key: string,
     input: createTransferDto,
   ): Promise<transferView> {
     ensureSafeMoney(input.amount);
@@ -61,26 +56,24 @@ export class transfersService {
     }
 
     const senderWallet = await this.wallets.getByUserId(senderId);
-    const result = await this.sequelize.transaction((transaction) =>
-      this.completeTransfer(transaction, senderWallet.id, recipientWallet.id, key, input),
+    const transfer = await this.sequelize.transaction((transaction) =>
+      this.completeTransfer(transaction, senderWallet.id, recipientWallet.id, input),
     );
 
-    if (!result.replayed) {
-      await Promise.all([
-        this.wallets.invalidate(senderId),
-        this.wallets.invalidate(recipient.id),
-        this.notifications.notify(senderEmail, 'wallet.transfer.sent', {
-          amount: input.amount,
-          recipientUsername,
-          transferId: result.transfer.id,
-        }),
-        this.notifications.notify(recipient.email, 'wallet.transfer.received', {
-          amount: input.amount,
-          transferId: result.transfer.id,
-        }),
-      ]);
-    }
-    return this.toView(result.transfer, result.replayed);
+    await Promise.all([
+      this.wallets.invalidate(senderId),
+      this.wallets.invalidate(recipient.id),
+      this.notifications.notify(senderEmail, 'wallet.transfer.sent', {
+        amount: input.amount,
+        recipientUsername,
+        transferId: transfer.id,
+      }),
+      this.notifications.notify(recipient.email, 'wallet.transfer.received', {
+        amount: input.amount,
+        transferId: transfer.id,
+      }),
+    ]);
+    return this.toView(transfer);
   }
 
   async get(userId: string, id: string): Promise<transferView> {
@@ -94,16 +87,15 @@ export class transfersService {
     if (!transfer) {
       throw new NotFoundException('transfer not found');
     }
-    return this.toView(transfer, false);
+    return this.toView(transfer);
   }
 
   private async completeTransfer(
     transaction: Transaction,
     senderWalletId: string,
     receiverWalletId: string,
-    key: string,
     input: createTransferDto,
-  ): Promise<completedTransfer> {
+  ): Promise<transferModel> {
     const lockedWallets = await this.walletRecords.findAll({
       where: { id: { [Op.in]: [senderWalletId, receiverWalletId] } },
       order: [['id', 'ASC']],
@@ -116,12 +108,17 @@ export class transfersService {
       throw new NotFoundException('wallet not found');
     }
 
-    const existing = await this.transfers.findOne({
-      where: { senderWalletId, idempotencyKey: key },
+    const recent = await this.transfers.findOne({
+      where: {
+        senderWalletId,
+        receiverWalletId,
+        amount: input.amount,
+        createdAt: { [Op.gte]: recentTransactionCutoff() },
+      },
       transaction,
     });
-    if (existing) {
-      return { transfer: existing, replayed: true };
+    if (recent) {
+      throw new ConflictException(recentTransactionMessage);
     }
 
     const senderBalance = Number(senderWallet.balance);
@@ -138,7 +135,7 @@ export class transfersService {
         receiverWalletId,
         amount: input.amount,
         currency,
-        idempotencyKey: key,
+        idempotencyKey: randomUUID(),
         status: 'completed',
         description: input.description ?? null,
       },
@@ -168,10 +165,10 @@ export class transfersService {
       ],
       { transaction },
     );
-    return { transfer, replayed: false };
+    return transfer;
   }
 
-  private toView(transfer: transferModel, replayed: boolean): transferView {
+  private toView(transfer: transferModel): transferView {
     return {
       id: transfer.id,
       amount: Number(transfer.amount),
@@ -179,7 +176,6 @@ export class transfersService {
       status: transfer.status,
       description: transfer.description,
       createdAt: transfer.createdAt,
-      replayed,
     };
   }
 }
