@@ -99,6 +99,15 @@ export class withdrawalsService {
     return this.toView(withdrawal);
   }
 
+  async list(userId: string): Promise<withdrawalView[]> {
+    const wallet = await this.wallets.getByUserId(userId);
+    const withdrawals = await this.withdrawals.findAll({
+      where: { walletId: wallet.id },
+      order: [['createdAt', 'DESC']],
+    });
+    return withdrawals.map((withdrawal) => this.toView(withdrawal));
+  }
+
   private async reserve(
     transaction: Transaction,
     walletId: string,

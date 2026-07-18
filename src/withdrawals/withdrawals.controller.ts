@@ -19,6 +19,12 @@ export class withdrawalsController {
     return this.service.create(user.userId, user.email, input);
   }
 
+  @Get()
+  @ApiOperation({ summary: 'List all withdrawal attempts for the authenticated user' })
+  list(@currentUser() user: authenticatedUser) {
+    return this.service.list(user.userId);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get withdrawal status' })
   get(@currentUser() user: authenticatedUser, @Param('id') id: string) {
