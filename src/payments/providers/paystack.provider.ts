@@ -13,6 +13,7 @@ import {
   initiateWithdrawalInput,
   paymentProvider,
   providerWebhookEvent,
+  verifiedDeposit,
 } from '../payment-provider';
 import { hasConfig } from './provider-utils';
 
@@ -91,6 +92,24 @@ export class paystackProvider implements paymentProvider {
     };
   }
 
+  async verifyDeposit(reference: string): Promise<verifiedDeposit> {
+    const data = await this.get<{
+      status: string;
+      reference: string;
+      amount: number;
+      currency: string;
+    }>(`/transaction/verify/${encodeURIComponent(reference)}`);
+    const status = data.status?.toLowerCase();
+    return {
+      reference: data.reference ?? reference,
+      status:
+        status === 'success' ? 'succeeded' : status === 'failed' || status === 'abandoned' ? 'failed' : 'pending',
+      amount: typeof data.amount === 'number' ? data.amount : undefined,
+      currency: typeof data.currency === 'string' ? data.currency : undefined,
+      providerStatus: data.status,
+    };
+  }
+
   verifyAndParseWebhook(
     rawBody: Buffer,
     headers: Record<string, string | string[] | undefined>,
@@ -143,13 +162,26 @@ export class paystackProvider implements paymentProvider {
   }
 
   private async request<T>(path: string, body: Record<string, unknown>): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    return this.send<T>(path, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.secretKey()}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
+    });
+  }
+
+  private async get<T>(path: string): Promise<T> {
+    return this.send<T>(path, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${this.secretKey()}` },
+    });
+  }
+
+  private async send<T>(path: string, init: RequestInit): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      ...init,
       signal: AbortSignal.timeout(15000),
     });
     const result = (await response.json()) as paystackResponse<T>;

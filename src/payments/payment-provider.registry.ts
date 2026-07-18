@@ -47,13 +47,17 @@ export class paymentProviderRegistry implements OnModuleInit {
     if (!active) {
       throw new ServiceUnavailableException('no active payment processor is configured');
     }
-    const provider = this.providers.get(active.name);
+    return this.require(active.name);
+  }
+
+  require(name: string): paymentProvider {
+    const provider = this.providers.get(name);
     if (!provider) {
-      throw new ServiceUnavailableException(`payment processor '${active.name}' is not configured`);
+      throw new ServiceUnavailableException(`payment processor '${name}' is not configured`);
     }
     if (!provider.isConfigured()) {
       throw new ServiceUnavailableException(
-        `payment processor '${active.name}' credentials are not configured`,
+        `payment processor '${name}' credentials are not configured`,
       );
     }
     return provider;

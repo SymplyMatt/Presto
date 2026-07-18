@@ -34,4 +34,33 @@ describe('paystackProvider webhooks', () => {
       provider.verifyAndParseWebhook(rawBody, { 'x-paystack-signature': 'invalid' }),
     ).toThrow(UnauthorizedException);
   });
+
+  it('maps transaction verification statuses by reference', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: true,
+        message: 'Verification successful',
+        data: {
+          status: 'success',
+          reference: 'dep-reference',
+          amount: 5000,
+          currency: 'NGN',
+        },
+      }),
+    } as Response);
+
+    await expect(provider.verifyDeposit('dep-reference')).resolves.toEqual({
+      reference: 'dep-reference',
+      status: 'succeeded',
+      amount: 5000,
+      currency: 'NGN',
+      providerStatus: 'success',
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://example.com/transaction/verify/dep-reference',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    fetchMock.mockRestore();
+  });
 });

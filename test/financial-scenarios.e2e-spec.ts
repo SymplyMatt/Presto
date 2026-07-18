@@ -10,11 +10,13 @@ import {
   initiateWithdrawalInput,
   paymentProvider,
   providerWebhookEvent,
+  verifiedDeposit,
 } from '../src/payments/payment-provider';
 import { paymentProvidersToken } from '../src/payments/payment-provider.registry';
 
 class testPaymentProvider implements paymentProvider {
   readonly name = 'paystack';
+  readonly verifiedDeposits = new Map<string, verifiedDeposit>();
 
   isConfigured(): boolean {
     return true;
@@ -30,6 +32,15 @@ class testPaymentProvider implements paymentProvider {
 
   async initiateWithdrawal(input: initiateWithdrawalInput) {
     return { reference: input.reference, transferCode: 'TRF_test', status: 'pending' };
+  }
+
+  async verifyDeposit(reference: string): Promise<verifiedDeposit> {
+    return (
+      this.verifiedDeposits.get(reference) ?? {
+        reference,
+        status: 'pending',
+      }
+    );
   }
 
   verifyAndParseWebhook(rawBody: Buffer): providerWebhookEvent {
@@ -51,10 +62,11 @@ class testPaymentProvider implements paymentProvider {
 describe('financial evaluation scenarios', () => {
   jest.setTimeout(30000);
   let app: INestApplication;
+  let provider: testPaymentProvider;
   let eventId = 1000;
 
   beforeAll(async () => {
-    const provider = new testPaymentProvider();
+    provider = new testPaymentProvider();
     const cache = new Map<string, unknown>();
     const module = await Test.createTestingModule({ imports: [appModule] })
       .overrideProvider(paymentProvidersToken)
@@ -144,6 +156,34 @@ describe('financial evaluation scenarios', () => {
       .auth(user.token, { type: 'bearer' })
       .expect(200);
     expect(ledger.body.items[0].paymentProcessor).toBe('paystack');
+  });
+
+  it('credits a deposit when verified by reference with the payment processor', async () => {
+    const user = await register('verify_ref');
+    const deposit = await initializeDeposit(user.token, 1500);
+    provider.verifiedDeposits.set(deposit.reference, {
+      reference: deposit.reference,
+      status: 'succeeded',
+      amount: 1500,
+      currency: 'NGN',
+    });
+
+    const verified = await request(app.getHttpServer())
+      .post('/api/v1/deposits/verify')
+      .auth(user.token, { type: 'bearer' })
+      .send({ reference: deposit.reference })
+      .expect(200);
+
+    expect(verified.body.status).toBe('confirmed');
+    expect((await wallet(user.token)).body.balance).toBe(1500);
+
+    const again = await request(app.getHttpServer())
+      .post('/api/v1/deposits/verify')
+      .auth(user.token, { type: 'bearer' })
+      .send({ reference: deposit.reference })
+      .expect(200);
+    expect(again.body.status).toBe('confirmed');
+    expect((await wallet(user.token)).body.balance).toBe(1500);
   });
 
   it('leaves an unconfirmed deposit pending without changing the balance', async () => {

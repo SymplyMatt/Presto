@@ -8,6 +8,7 @@ import {
   initiateWithdrawalInput,
   paymentProvider,
   providerWebhookEvent,
+  verifiedDeposit,
 } from '../payment-provider';
 import {
   assertSignature,
@@ -78,6 +79,24 @@ export class flutterwaveProvider implements paymentProvider {
     };
   }
 
+  async verifyDeposit(reference: string): Promise<verifiedDeposit> {
+    const result = await this.get<{
+      status?: string;
+      tx_ref?: string;
+      amount?: number;
+      currency?: string;
+    }>(`/transactions/verify_by_reference?tx_ref=${encodeURIComponent(reference)}`);
+    const status = result.status?.toLowerCase();
+    return {
+      reference: result.tx_ref ?? reference,
+      status:
+        status === 'successful' ? 'succeeded' : status === 'failed' || status === 'cancelled' ? 'failed' : 'pending',
+      amount: toMinorAmount(result.amount),
+      currency: typeof result.currency === 'string' ? result.currency : undefined,
+      providerStatus: result.status,
+    };
+  }
+
   verifyAndParseWebhook(
     rawBody: Buffer,
     headers: Record<string, string | string[] | undefined>,
@@ -127,13 +146,28 @@ export class flutterwaveProvider implements paymentProvider {
   }
 
   private async request<T>(path: string, body: Record<string, unknown>): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    return this.send<T>(path, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${requiredConfig(this.config, 'FLUTTERWAVE_SECRET_KEY')}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
+    });
+  }
+
+  private async get<T>(path: string): Promise<T> {
+    return this.send<T>(path, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${requiredConfig(this.config, 'FLUTTERWAVE_SECRET_KEY')}`,
+      },
+    });
+  }
+
+  private async send<T>(path: string, init: RequestInit): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      ...init,
       signal: AbortSignal.timeout(15000),
     });
     const result = await parseResponse<flutterwaveResponse<T>>(response);

@@ -44,11 +44,22 @@ export interface providerWebhookEvent {
   currency?: string;
 }
 
+export type verifiedDepositStatus = 'succeeded' | 'failed' | 'pending';
+
+export interface verifiedDeposit {
+  reference: string;
+  status: verifiedDepositStatus;
+  amount?: number;
+  currency?: string;
+  providerStatus?: string;
+}
+
 export interface paymentProvider {
   readonly name: string;
   isConfigured(): boolean;
   initializeDeposit(input: initializeDepositInput): Promise<initializedDeposit>;
   initiateWithdrawal(input: initiateWithdrawalInput): Promise<initiatedWithdrawal>;
+  verifyDeposit(reference: string): Promise<verifiedDeposit>;
   verifyAndParseWebhook(
     rawBody: Buffer,
     headers: Record<string, string | string[] | undefined>,

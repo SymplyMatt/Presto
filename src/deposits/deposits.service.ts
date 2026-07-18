@@ -1,4 +1,10 @@
-import { ConflictException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
 import { InjectModel } from '@nestjs/sequelize';
@@ -8,7 +14,8 @@ import { Op, Transaction } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { currency, ensureSafeMoney } from '../common/money';
 import { recentTransactionCutoff, recentTransactionMessage } from '../common/recent-transaction';
-import { depositModel, walletModel } from '../database/models';
+import { depositModel, ledgerEntryModel, walletModel } from '../database/models';
+import { notificationService } from '../notifications/notification.service';
 import { paymentProvider } from '../payments/payment-provider';
 import { paymentProviderRegistry } from '../payments/payment-provider.registry';
 import { walletsService } from '../wallets/wallets.service';
@@ -40,8 +47,10 @@ export class depositsService {
     private readonly sequelize: Sequelize,
     @InjectModel(depositModel) private readonly deposits: typeof depositModel,
     @InjectModel(walletModel) private readonly walletRecords: typeof walletModel,
+    @InjectModel(ledgerEntryModel) private readonly ledgerEntries: typeof ledgerEntryModel,
     private readonly wallets: walletsService,
     private readonly providers: paymentProviderRegistry,
+    private readonly notifications: notificationService,
     private readonly configService: ConfigService,
     @Optional()
     @InjectQueue(depositExpireQueue)
@@ -124,6 +133,57 @@ export class depositsService {
     return this.toView(deposit);
   }
 
+  async list(userId: string): Promise<depositView[]> {
+    const wallet = await this.wallets.getByUserId(userId);
+    const deposits = await this.deposits.findAll({
+      where: { walletId: wallet.id },
+      order: [['createdAt', 'DESC']],
+    });
+    return deposits.map((deposit) => this.toView(deposit));
+  }
+
+  async verifyByReference(
+    userId: string,
+    email: string,
+    reference: string,
+  ): Promise<depositView> {
+    const wallet = await this.wallets.getByUserId(userId);
+    const existing = await this.deposits.findOne({
+      where: { walletId: wallet.id, providerReference: reference.trim() },
+    });
+    if (!existing) {
+      throw new NotFoundException('deposit not found');
+    }
+    if (existing.status === 'confirmed') {
+      return this.toView(existing);
+    }
+
+    const provider = this.providers.require(existing.providerName);
+    const verified = await provider.verifyDeposit(existing.providerReference);
+
+    if (verified.status === 'pending') {
+      return this.toView(existing);
+    }
+
+    if (verified.status === 'failed') {
+      return this.markFailedIfPending(existing.id);
+    }
+
+    if (verified.amount !== Number(existing.amount) || verified.currency !== existing.currency) {
+      throw new ConflictException('deposit details do not match provider verification');
+    }
+
+    const confirmed = await this.confirmIfEligible(existing.id);
+    await this.wallets.invalidate(userId);
+    if (confirmed.status === 'confirmed') {
+      void this.notifications.notify(email, 'wallet.deposit.confirmed', {
+        amount: Number(confirmed.amount),
+        depositId: confirmed.id,
+      });
+    }
+    return this.toView(confirmed);
+  }
+
   async expireIfPending(depositId: string): Promise<boolean> {
     return this.sequelize.transaction(async (transaction) => {
       const deposit = await this.deposits.findByPk(depositId, {
@@ -136,6 +196,67 @@ export class depositsService {
       deposit.status = 'failed';
       await deposit.save({ transaction });
       return true;
+    });
+  }
+
+  private async markFailedIfPending(depositId: string): Promise<depositView> {
+    return this.sequelize.transaction(async (transaction) => {
+      const deposit = await this.deposits.findByPk(depositId, {
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+      if (!deposit) {
+        throw new NotFoundException('deposit not found');
+      }
+      if (deposit.status === 'pending') {
+        deposit.status = 'failed';
+        await deposit.save({ transaction });
+      }
+      return this.toView(deposit);
+    });
+  }
+
+  private async confirmIfEligible(depositId: string): Promise<depositModel> {
+    return this.sequelize.transaction(async (transaction) => {
+      const deposit = await this.deposits.findByPk(depositId, {
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+      if (!deposit) {
+        throw new NotFoundException('deposit not found');
+      }
+      if (deposit.status === 'confirmed') {
+        return deposit;
+      }
+      if (deposit.status !== 'pending' && deposit.status !== 'failed') {
+        throw new ConflictException('deposit not eligible for credit');
+      }
+
+      const wallet = await this.walletRecords.findByPk(deposit.walletId, {
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+      if (!wallet) {
+        throw new NotFoundException('wallet not found');
+      }
+      wallet.balance = Number(wallet.balance) + Number(deposit.amount);
+      deposit.status = 'confirmed';
+      deposit.confirmedAt = new Date();
+      await Promise.all([wallet.save({ transaction }), deposit.save({ transaction })]);
+      await this.ledgerEntries.create(
+        {
+          walletId: wallet.id,
+          entryType: 'depositCredit',
+          direction: 'credit',
+          amount: Number(deposit.amount),
+          balanceAfter: Number(wallet.balance),
+          referenceType: 'deposit',
+          referenceId: deposit.id,
+          paymentProcessorName: deposit.providerName,
+        },
+        { transaction },
+      );
+      return deposit;
     });
   }
 

@@ -76,10 +76,11 @@ All monetary values are positive integer **kobo**. Only NGN is supported.
 1. `POST /api/v1/auth/register` creates a user and zero-balance wallet.
 2. `POST /api/v1/auth/login` returns a bearer token and sets the JWT session cookie.
 3. `POST /api/v1/deposits` creates a pending deposit with the active payment processor and returns its checkout URL.
-4. The active payment processor sends a signed event to `POST /api/v1/webhooks/payments`; only a valid signature and exact reference/amount/currency match can credit the wallet.
-5. `POST /api/v1/transfers` moves money between platform wallets atomically.
-6. `POST /api/v1/withdrawals` reserves wallet funds and initiates a payout with the active payment processor.
-7. `GET /api/v1/wallet` returns the cached wallet view; `GET /api/v1/wallet/ledger` returns the PostgreSQL audit history.
+4. `POST /api/v1/deposits/verify` checks the processor by deposit reference and credits the wallet when payment succeeded (useful if the webhook was delayed or missed).
+5. The active payment processor sends a signed event to `POST /api/v1/webhooks/payments`; only a valid signature and exact reference/amount/currency match can credit the wallet.
+6. `POST /api/v1/transfers` moves money between platform wallets atomically.
+7. `POST /api/v1/withdrawals` reserves wallet funds and initiates a payout with the active payment processor.
+8. `GET /api/v1/wallet` returns the cached wallet view; `GET /api/v1/wallet/ledger` returns the PostgreSQL audit history.
 
 Clients do not send idempotency keys. The API rejects a similar deposit, transfer, or withdrawal when the same user attempted it during the preceding two minutes. The check runs inside the same database transaction and wallet lock used for the financial operation, including concurrent requests.
 

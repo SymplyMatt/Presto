@@ -8,6 +8,7 @@ import {
   initiateWithdrawalInput,
   paymentProvider,
   providerWebhookEvent,
+  verifiedDeposit,
 } from '../payment-provider';
 import {
   assertSignature,
@@ -103,6 +104,49 @@ export class monnifyProvider implements paymentProvider {
     };
   }
 
+  async verifyDeposit(reference: string): Promise<verifiedDeposit> {
+    const result = await this.get<
+      | {
+          paymentStatus?: string;
+          paymentReference?: string;
+          amountPaid?: number;
+          amount?: number;
+          currencyCode?: string;
+          currency?: string;
+        }
+      | Array<{
+          paymentStatus?: string;
+          paymentReference?: string;
+          amountPaid?: number;
+          amount?: number;
+          currencyCode?: string;
+          currency?: string;
+        }>
+    >(`/api/v2/merchant/transactions/query?paymentReference=${encodeURIComponent(reference)}`);
+    const transaction = Array.isArray(result) ? result[0] : result;
+    if (!transaction) {
+      return { reference, status: 'pending' };
+    }
+    const status = transaction.paymentStatus?.toUpperCase();
+    return {
+      reference: transaction.paymentReference ?? reference,
+      status:
+        status === 'PAID' || status === 'SUCCESS' || status === 'COMPLETED'
+          ? 'succeeded'
+          : status === 'FAILED' || status === 'CANCELLED' || status === 'EXPIRED'
+            ? 'failed'
+            : 'pending',
+      amount: toMinorAmount(transaction.amountPaid ?? transaction.amount),
+      currency:
+        typeof transaction.currencyCode === 'string'
+          ? transaction.currencyCode
+          : typeof transaction.currency === 'string'
+            ? transaction.currency
+            : undefined,
+      providerStatus: transaction.paymentStatus,
+    };
+  }
+
   verifyAndParseWebhook(
     rawBody: Buffer,
     headers: Record<string, string | string[] | undefined>,
@@ -169,7 +213,16 @@ export class monnifyProvider implements paymentProvider {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(15000),
     });
-    return this.parseResponse<T>(response);
+    return this.parseResponseBody<T>(response);
+  }
+
+  private async get<T>(path: string): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${await this.accessToken()}` },
+      signal: AbortSignal.timeout(15000),
+    });
+    return this.parseResponseBody<T>(response);
   }
 
   private async accessToken(): Promise<string> {
@@ -187,7 +240,9 @@ export class monnifyProvider implements paymentProvider {
       headers: { Authorization: `Basic ${credentials}` },
       signal: AbortSignal.timeout(15000),
     });
-    const result = await this.parseResponse<{ accessToken: string; expiresIn?: number }>(response);
+    const result = await this.parseResponseBody<{ accessToken: string; expiresIn?: number }>(
+      response,
+    );
     const expiresIn = Number(result.expiresIn ?? 3600);
     this.token = {
       value: result.accessToken,
@@ -196,7 +251,7 @@ export class monnifyProvider implements paymentProvider {
     return this.token.value;
   }
 
-  private async parseResponse<T>(response: Response): Promise<T> {
+  private async parseResponseBody<T>(response: Response): Promise<T> {
     const result = await parseResponse<monnifyResponse<T>>(response);
     if (!result.requestSuccessful || !result.responseBody) {
       throw new BadGatewayException(responseMessage(result));

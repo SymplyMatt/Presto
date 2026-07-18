@@ -8,6 +8,7 @@ import {
   initiateWithdrawalInput,
   paymentProvider,
   providerWebhookEvent,
+  verifiedDeposit,
 } from '../payment-provider';
 import {
   assertSignature,
@@ -109,6 +110,31 @@ export class fincraProvider implements paymentProvider {
     };
   }
 
+  async verifyDeposit(reference: string): Promise<verifiedDeposit> {
+    const result = await this.get<{
+      status?: string;
+      merchantReference?: string;
+      reference?: string;
+      amountExpected?: number;
+      amountReceived?: number;
+      amount?: number;
+      currency?: string;
+    }>(`/checkout/payments/merchant-reference/${encodeURIComponent(reference)}`, this.apiHeaders());
+    const status = result.status?.toLowerCase();
+    return {
+      reference: result.merchantReference ?? result.reference ?? reference,
+      status:
+        status === 'success' || status === 'successful'
+          ? 'succeeded'
+          : status === 'failed' || status === 'cancelled'
+            ? 'failed'
+            : 'pending',
+      amount: toMinorAmount(result.amountReceived ?? result.amountExpected ?? result.amount),
+      currency: typeof result.currency === 'string' ? result.currency : undefined,
+      providerStatus: result.status,
+    };
+  }
+
   verifyAndParseWebhook(
     rawBody: Buffer,
     headers: Record<string, string | string[] | undefined>,
@@ -179,16 +205,30 @@ export class fincraProvider implements paymentProvider {
     body: Record<string, unknown>,
     headers: Record<string, string>,
   ): Promise<T> {
+    return this.send<T>(
+      path,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      },
+      true,
+    );
+  }
+
+  private async get<T>(path: string, headers: Record<string, string>): Promise<T> {
+    return this.send<T>(path, { method: 'GET', headers }, true);
+  }
+
+  private async send<T>(path: string, init: RequestInit, requireData: boolean): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
+      ...init,
       signal: AbortSignal.timeout(15000),
     });
     const result = await parseResponse<fincraResponse<T>>(response);
-    if ((!result.status && !result.success) || !result.data) {
+    if ((!result.status && !result.success) || (requireData && !result.data)) {
       throw new BadGatewayException(responseMessage(result));
     }
-    return result.data;
+    return result.data as T;
   }
 }

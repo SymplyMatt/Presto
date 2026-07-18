@@ -1,7 +1,7 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
-import { depositModel, walletModel } from '../database/models';
+import { depositModel, ledgerEntryModel, walletModel } from '../database/models';
 import { paymentsModule } from '../payments/payments.module';
 import { walletsModule } from '../wallets/wallets.module';
 import { depositExpireProcessor } from './deposit-expire.processor';
@@ -16,7 +16,7 @@ const queueProviders = queueDisabled
 
 @Module({
   imports: [
-    SequelizeModule.forFeature([depositModel, walletModel]),
+    SequelizeModule.forFeature([depositModel, walletModel, ledgerEntryModel]),
     paymentsModule,
     walletsModule,
     ...queueImports,
