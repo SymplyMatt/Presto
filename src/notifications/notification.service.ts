@@ -26,16 +26,21 @@ export class notificationService {
       return;
     }
     try {
-      await this.queue.add(
-        'activity',
-        { email, activity, details },
-        {
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 1000 },
-          removeOnComplete: 100,
-          removeOnFail: 500,
-        },
-      );
+      await Promise.race([
+        this.queue.add(
+          'activity',
+          { email, activity, details },
+          {
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 1000 },
+            removeOnComplete: 100,
+            removeOnFail: 500,
+          },
+        ),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('notification enqueue timed out')), 5_000),
+        ),
+      ]);
     } catch (error) {
       this.logger.error('Unable to enqueue activity notification', error);
     }

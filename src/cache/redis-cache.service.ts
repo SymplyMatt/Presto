@@ -12,6 +12,8 @@ export class redisCacheService implements OnModuleDestroy {
       port: configService.get<number>('REDIS_PORT', 6379),
       password: configService.get<string>('REDIS_PASSWORD') || undefined,
       maxRetriesPerRequest: 2,
+      connectTimeout: 5_000,
+      enableOfflineQueue: false,
     });
   }
 

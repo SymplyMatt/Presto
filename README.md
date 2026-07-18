@@ -46,7 +46,8 @@ Use `GET /api/v1/payment-processors` to list the registry, active state, and con
 | `DATABASE_SSL` | Set `true` when a hosted PostgreSQL service requires TLS |
 | `JWT_SECRET` | JWT signing secret, at least 32 random characters recommended |
 | `JWT_EXPIRES_IN_SECONDS` | Access-token lifetime in seconds, default `3600` |
-| `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` | Redis connection |
+| `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` | Redis connection for BullMQ queues and wallet cache |
+| `DISABLE_QUEUE_WORKER` | Set `true` when Redis is unavailable so notifications/jobs are skipped instead of hanging |
 | `PAYSTACK_SECRET_KEY`, `PAYSTACK_BASE_URL` | Paystack secret key and optional API URL override |
 | `FLUTTERWAVE_SECRET_KEY`, `FLUTTERWAVE_WEBHOOK_SECRET`, `FLUTTERWAVE_BASE_URL` | Flutterwave API and webhook credentials, plus optional API URL override |
 | `FINCRA_SECRET_KEY`, `FINCRA_PUBLIC_KEY`, `FINCRA_BUSINESS_ID`, `FINCRA_WEBHOOK_SECRET`, `FINCRA_BASE_URL` | Fincra API, business, and webhook credentials, plus optional API URL override |

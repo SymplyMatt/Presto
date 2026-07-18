@@ -38,7 +38,7 @@ export class authService {
         await this.wallets.create({ userId: savedUser.id, balance: 0 }, { transaction });
         return savedUser;
       });
-      await this.notifications.notify(user.email, 'account.registered', {
+      void this.notifications.notify(user.email, 'account.registered', {
         username: user.username,
       });
       return this.createSession(user);
@@ -58,7 +58,7 @@ export class authService {
     if (!user || !(await compare(input.password, user.passwordHash))) {
       throw new UnauthorizedException('invalid credentials');
     }
-    await this.notifications.notify(user.email, 'account.login', {});
+    void this.notifications.notify(user.email, 'account.login', {});
     return this.createSession(user);
   }
 

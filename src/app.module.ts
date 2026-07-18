@@ -48,6 +48,10 @@ const validateEnvironment = (values: Record<string, unknown>) => {
           host: configService.get('REDIS_HOST', 'localhost'),
           port: configService.get<number>('REDIS_PORT', 6379),
           password: configService.get<string>('REDIS_PASSWORD') || undefined,
+          // Fail fast when Redis is unreachable (e.g. Render without a Redis add-on).
+          maxRetriesPerRequest: 1,
+          connectTimeout: 5_000,
+          enableOfflineQueue: false,
         },
       }),
     }),
