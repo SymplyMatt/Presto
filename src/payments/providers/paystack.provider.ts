@@ -14,6 +14,8 @@ import {
   initiateWithdrawalInput,
   paymentProvider,
   providerWebhookEvent,
+  resolveAccountInput,
+  resolvedAccount,
   verifiedDeposit,
 } from '../payment-provider';
 import { hasConfig } from './provider-utils';
@@ -70,6 +72,20 @@ export class paystackProvider implements paymentProvider {
       currency: input.currency,
     });
     return data.recipient_code;
+  }
+
+  async resolveAccount(input: resolveAccountInput): Promise<resolvedAccount> {
+    const data = await this.get<{ account_number: string; account_name: string; bank_id?: number }>(
+      `/bank/resolve?account_number=${encodeURIComponent(input.accountNumber)}&bank_code=${encodeURIComponent(input.bankCode)}`,
+    );
+    if (!data.account_name) {
+      throw new BadGatewayException('unable to resolve bank account name');
+    }
+    return {
+      accountName: data.account_name,
+      accountNumber: data.account_number ?? input.accountNumber,
+      bankCode: input.bankCode,
+    };
   }
 
   async initiateWithdrawal(input: initiateWithdrawalInput): Promise<initiatedWithdrawal> {

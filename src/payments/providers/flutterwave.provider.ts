@@ -9,6 +9,8 @@ import {
   initiateWithdrawalInput,
   paymentProvider,
   providerWebhookEvent,
+  resolveAccountInput,
+  resolvedAccount,
   verifiedDeposit,
 } from '../payment-provider';
 import {
@@ -57,6 +59,24 @@ export class flutterwaveProvider implements paymentProvider {
       customizations: { title: 'Wallet funding' },
     });
     return { reference: input.reference, checkoutUrl: result.link };
+  }
+
+  async resolveAccount(input: resolveAccountInput): Promise<resolvedAccount> {
+    const result = await this.request<{ account_number?: string; account_name?: string }>(
+      '/accounts/resolve',
+      {
+        account_number: input.accountNumber,
+        account_bank: input.bankCode,
+      },
+    );
+    if (!result.account_name) {
+      throw new BadGatewayException('unable to resolve bank account name');
+    }
+    return {
+      accountName: result.account_name,
+      accountNumber: result.account_number ?? input.accountNumber,
+      bankCode: input.bankCode,
+    };
   }
 
   async initiateWithdrawal(input: initiateWithdrawalInput): Promise<initiatedWithdrawal> {

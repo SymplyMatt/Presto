@@ -88,4 +88,32 @@ describe('paystackProvider webhooks', () => {
     );
     fetchMock.mockRestore();
   });
+
+  it('resolves an account name from Paystack', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: true,
+        message: 'Account number resolved',
+        data: {
+          account_number: '0123456789',
+          account_name: 'ADA LOVELACE',
+          bank_id: 9,
+        },
+      }),
+    } as Response);
+
+    await expect(
+      provider.resolveAccount({ accountNumber: '0123456789', bankCode: '058' }),
+    ).resolves.toEqual({
+      accountName: 'ADA LOVELACE',
+      accountNumber: '0123456789',
+      bankCode: '058',
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://example.com/bank/resolve?account_number=0123456789&bank_code=058',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    fetchMock.mockRestore();
+  });
 });

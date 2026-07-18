@@ -18,6 +18,17 @@ export interface withdrawalDestination {
   bankCode: string;
 }
 
+export interface resolveAccountInput {
+  accountNumber: string;
+  bankCode: string;
+}
+
+export interface resolvedAccount {
+  accountName: string;
+  accountNumber: string;
+  bankCode: string;
+}
+
 export interface initiateWithdrawalInput {
   amount: number;
   currency: string;
@@ -63,6 +74,7 @@ export interface paymentProvider {
   readonly name: string;
   isConfigured(): boolean;
   initializeDeposit(input: initializeDepositInput): Promise<initializedDeposit>;
+  resolveAccount(input: resolveAccountInput): Promise<resolvedAccount>;
   initiateWithdrawal(input: initiateWithdrawalInput): Promise<initiatedWithdrawal>;
   verifyDeposit(reference: string): Promise<verifiedDeposit>;
   listBanks(): Promise<bankInfo[]>;

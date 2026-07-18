@@ -48,9 +48,13 @@ export class withdrawalsService {
     ensureSafeMoney(input.amount);
     const wallet = await this.wallets.getByUserId(userId);
     const provider = await this.providers.getActive();
+    const resolved = await provider.resolveAccount({
+      accountNumber: input.accountNumber,
+      bankCode: input.bankCode,
+    });
     const providerReference = `wd-${randomUUID()}`;
     const withdrawal = await this.sequelize.transaction((transaction) =>
-      this.reserve(transaction, wallet.id, provider, providerReference, input),
+      this.reserve(transaction, wallet.id, provider, providerReference, input, resolved.accountName),
     );
 
     await Promise.all([
@@ -67,7 +71,7 @@ export class withdrawalsService {
         currency: withdrawal.currency,
         reference: providerReference,
         destination: {
-          accountName: input.accountName.trim(),
+          accountName: resolved.accountName,
           accountNumber: input.accountNumber,
           bankCode: input.bankCode,
         },
@@ -101,6 +105,7 @@ export class withdrawalsService {
     provider: paymentProvider,
     providerReference: string,
     input: createWithdrawalDto,
+    accountName: string,
   ): Promise<withdrawalModel> {
     const wallet = await this.walletRecords.findByPk(walletId, {
       transaction,
@@ -136,7 +141,7 @@ export class withdrawalsService {
         currency,
         bankCode: input.bankCode,
         accountNumberLastFour: input.accountNumber.slice(-4),
-        accountName: input.accountName.trim(),
+        accountName,
         recipientCode: null,
         providerName: provider.name,
         providerReference,

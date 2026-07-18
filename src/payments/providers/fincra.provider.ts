@@ -9,6 +9,8 @@ import {
   initiateWithdrawalInput,
   paymentProvider,
   providerWebhookEvent,
+  resolveAccountInput,
+  resolvedAccount,
   verifiedDeposit,
 } from '../payment-provider';
 import {
@@ -74,6 +76,25 @@ export class fincraProvider implements paymentProvider {
       reference: result.reference ?? input.reference,
       checkoutUrl: result.link,
       accessCode: result.payCode,
+    };
+  }
+
+  async resolveAccount(input: resolveAccountInput): Promise<resolvedAccount> {
+    const result = await this.get<{
+      accountNumber?: string;
+      accountName?: string;
+      bankCode?: string;
+    }>(
+      `/core/accounts/resolve?accountNumber=${encodeURIComponent(input.accountNumber)}&bankCode=${encodeURIComponent(input.bankCode)}`,
+      this.apiHeaders(),
+    );
+    if (!result.accountName) {
+      throw new BadGatewayException('unable to resolve bank account name');
+    }
+    return {
+      accountName: result.accountName,
+      accountNumber: result.accountNumber ?? input.accountNumber,
+      bankCode: result.bankCode ?? input.bankCode,
     };
   }
 

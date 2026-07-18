@@ -11,6 +11,8 @@ import {
   initiateWithdrawalInput,
   paymentProvider,
   providerWebhookEvent,
+  resolveAccountInput,
+  resolvedAccount,
   verifiedDeposit,
 } from '../src/payments/payment-provider';
 import { paymentProvidersToken } from '../src/payments/payment-provider.registry';
@@ -28,6 +30,14 @@ class testPaymentProvider implements paymentProvider {
       reference: input.reference,
       checkoutUrl: `https://checkout.test/${input.reference}`,
       accessCode: 'access-code',
+    };
+  }
+
+  async resolveAccount(input: resolveAccountInput): Promise<resolvedAccount> {
+    return {
+      accountName: 'Resolved Account',
+      accountNumber: input.accountNumber,
+      bankCode: input.bankCode,
     };
   }
 
@@ -294,7 +304,6 @@ describe('financial evaluation scenarios', () => {
       amount: 700,
       bankCode: '058',
       accountNumber: '0123456789',
-      accountName: 'Test User',
     };
 
     const responses = await Promise.all([

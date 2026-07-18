@@ -9,6 +9,8 @@ import {
   initiateWithdrawalInput,
   paymentProvider,
   providerWebhookEvent,
+  resolveAccountInput,
+  resolvedAccount,
   verifiedDeposit,
 } from '../payment-provider';
 import {
@@ -79,6 +81,24 @@ export class monnifyProvider implements paymentProvider {
       reference: result.paymentReference ?? input.reference,
       checkoutUrl: result.checkoutUrl,
       accessCode: result.transactionReference,
+    };
+  }
+
+  async resolveAccount(input: resolveAccountInput): Promise<resolvedAccount> {
+    const result = await this.get<{
+      accountNumber?: string;
+      accountName?: string;
+      bankCode?: string;
+    }>(
+      `/api/v1/disbursements/account/validate?accountNumber=${encodeURIComponent(input.accountNumber)}&bankCode=${encodeURIComponent(input.bankCode)}`,
+    );
+    if (!result.accountName) {
+      throw new BadGatewayException('unable to resolve bank account name');
+    }
+    return {
+      accountName: result.accountName,
+      accountNumber: result.accountNumber ?? input.accountNumber,
+      bankCode: result.bankCode ?? input.bankCode,
     };
   }
 
