@@ -14,6 +14,8 @@ The submission deadline is interpreted in **Africa/Lagos (WAT, UTC+1)**: Saturda
 - JWT authentication and bcrypt password hashing
 - Swagger/OpenAPI at `/docs` and `/docs/openapi.json`
 
+
+
 ## Run locally
 
 Requirements: Node.js 22+, npm, PostgreSQL 16+, Redis 7+, and credentials for the active payment processor.
@@ -35,26 +37,31 @@ https://your-public-host/api/v1/webhooks/payments
 
 The webhook route and wallet services are processor-neutral. PostgreSQL stores Flutterwave, Paystack, Fincra, and Monnify in the processor registry. Paystack is seeded as active; the others are seeded as inactive. Business services query the active row and resolve its adapter before every external payment operation. Each supported processor has working checkout, payout, and signed-webhook implementations.
 
-Use `GET /api/v1/payment-processors` to list the registry, active state, and configuration readiness. Use `PATCH /api/v1/payment-processors/:name/activate` to change the active processor. Both endpoints require authentication. Activation is rejected until every required credential for that processor is present, leaving the current processor active. Processor-specific payloads, credentials, URLs, and webhook verification belong only inside the corresponding adapter.
+Use `GET /api/v1/payment-processors` to list the registry, active state, and configuration readiness. Use `PATCH /api/v1/payment-processors/:name/activate` to change the active processor. Both endpoints require authentication. Activation is rejected until every required credential for that processor is present, leaving the current processor active. Processor-specific payloads, credentials, URLs, and webhook verification belwhong only inside the corresponding adapter.
 
 ## Environment
 
-| Variable | Purpose |
-| --- | --- |
-| `DATABASE_URL` | PostgreSQL connection string |
-| `DB_SYNCHRONIZE` | Development-only schema sync; keep `false` outside tests |
-| `DATABASE_SSL` | Set `true` when a hosted PostgreSQL service requires TLS |
-| `JWT_SECRET` | JWT signing secret, at least 32 random characters recommended |
-| `JWT_EXPIRES_IN_SECONDS` | Access-token lifetime in seconds, default `3600` |
-| `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` | Redis connection for BullMQ queues and wallet cache |
-| `DISABLE_QUEUE_WORKER` | Set `true` when Redis is unavailable so notifications/jobs are skipped instead of hanging |
-| `PAYSTACK_SECRET_KEY`, `PAYSTACK_BASE_URL` | Paystack secret key and optional API URL override |
-| `FLUTTERWAVE_SECRET_KEY`, `FLUTTERWAVE_WEBHOOK_SECRET`, `FLUTTERWAVE_BASE_URL` | Flutterwave API and webhook credentials, plus optional API URL override |
-| `FINCRA_SECRET_KEY`, `FINCRA_PUBLIC_KEY`, `FINCRA_BUSINESS_ID`, `FINCRA_WEBHOOK_SECRET`, `FINCRA_BASE_URL` | Fincra API, business, and webhook credentials, plus optional API URL override |
-| `MONNIFY_API_KEY`, `MONNIFY_SECRET_KEY`, `MONNIFY_CONTRACT_CODE`, `MONNIFY_SOURCE_ACCOUNT_NUMBER`, `MONNIFY_BASE_URL` | Monnify collection and disbursement credentials, plus optional API URL override |
-| `MONNIFY_ALLOW_UNSIGNED_SANDBOX_WEBHOOKS` | Opt in to Monnify's unsigned sandbox webhooks outside production; default `false` |
-| `APP_BASE_URL` | Public application URL used for payment callbacks |
-| `CORS_ORIGINS` | Comma-separated browser origins allowed to send credentialed requests |
+
+| Variable                                                                                                              | Purpose                                                                                   |
+| --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                                                                                        | PostgreSQL connection string                                                              |
+| `DB_SYNCHRONIZE`                                                                                                      | Development-only schema sync; keep `false` outside tests                                  |
+| `DATABASE_SSL`                                                                                                        | Set `true` when a hosted PostgreSQL service requires TLS                                  |
+| `JWT_SECRET`                                                                                                          | JWT signing secret, at least 32 random characters recommended                             |
+| `JWT_EXPIRES_IN_SECONDS`                                                                                              | Access-token lifetime in seconds, default `3600`                                          |
+| `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_PASSWORD`                                                        | Redis connection for BullMQ queues and wallet cache                                       |
+| `REDIS_TLS`                                                                                                           | Set `true` only for `rediss://` / TLS-required Redis endpoints                            |
+| `DISABLE_QUEUE_WORKER`                                                                                                | Set `true` when Redis is unavailable so notifications/jobs are skipped instead of hanging |
+| `PAYSTACK_SECRET_KEY`, `PAYSTACK_BASE_URL`                                                                            | Paystack secret key and optional API URL override                                         |
+| `FLUTTERWAVE_SECRET_KEY`, `FLUTTERWAVE_WEBHOOK_SECRET`, `FLUTTERWAVE_BASE_URL`                                        | Flutterwave API and webhook credentials, plus optional API URL override                   |
+| `FINCRA_SECRET_KEY`, `FINCRA_PUBLIC_KEY`, `FINCRA_BUSINESS_ID`, `FINCRA_WEBHOOK_SECRET`, `FINCRA_BASE_URL`            | Fincra API, business, and webhook credentials, plus optional API URL override             |
+| `MONNIFY_API_KEY`, `MONNIFY_SECRET_KEY`, `MONNIFY_CONTRACT_CODE`, `MONNIFY_SOURCE_ACCOUNT_NUMBER`, `MONNIFY_BASE_URL` | Monnify collection and disbursement credentials, plus optional API URL override           |
+| `MONNIFY_ALLOW_UNSIGNED_SANDBOX_WEBHOOKS`                                                                             | Opt in to Monnify's unsigned sandbox webhooks outside production; default `false`         |
+| `APP_BASE_URL`                                                                                                        | Public application URL used for payment callbacks                                         |
+| `CORS_ORIGINS`                                                                                                        | Comma-separated browser origins allowed to send credentialed requests                     |
+
+
+
 
 ## Authentication
 
@@ -99,6 +106,31 @@ curl -c cookies.txt -X POST http://localhost:3000/api/v1/auth/login \
 curl -b cookies.txt http://localhost:3000/api/v1/wallet
 ```
 
+
+
+## Redis caching and queues
+
+
+
+### What is cached, and why
+
+Redis caches only the wallet summary returned by `GET /api/v1/wallet`: the wallet ID, current balance, and currency. Each entry uses the key `wallet:user:<userId>` and expires after 30 seconds. This is a frequently requested view, so the short-lived cache reduces repeated PostgreSQL reads while keeping the maximum stale period small.
+
+The wallet cache is invalidated after every committed operation that can change a balance, including deposits, transfers, withdrawal reservations, and withdrawal refunds. PostgreSQL remains authoritative; ledger history, transaction records, authentication data, and payment-processor configuration are not cached. If Redis is unavailable, wallet reads fall back to PostgreSQL.
+
+### What is queued with Redis, and why
+
+BullMQ stores two types of jobs in Redis:
+
+- Activity email notifications for registration, login, sent and received transfers, withdrawal requests, confirmed deposits, completed withdrawals, and failed withdrawals. Email work runs after the financial operation and outside the request path so a slow or temporarily failing email service cannot delay or roll back a committed transaction. Notification jobs retry up to three times with exponential backoff.
+- Delayed deposit-expiration jobs. A job is scheduled when checkout initialization succeeds and runs after `DEPOSIT_PENDING_TTL_SECONDS`. It marks the deposit as failed only when it is still pending. This schedules abandoned-checkout cleanup at the required time without continuous database polling.
+
+Queue jobs contain only the information needed by their workers. PostgreSQL remains the source of truth, and each worker re-checks current database state before making a financial-status change.
+
+### Why Redis was chosen as the queue system
+
+Redis was already required for the wallet cache, so using it through BullMQ avoids introducing another infrastructure service. BullMQ integrates directly with NestJS and provides delayed jobs, retries, exponential backoff, job identifiers, worker concurrency, and job state outside the application process. Those features fit email delivery and deposit-expiration scheduling while keeping all wallet balances and financial records in PostgreSQL.
+
 ## Decisions
 
 - Money is stored as PostgreSQL `bigint` kobo, never floating point.
@@ -113,6 +145,8 @@ curl -b cookies.txt http://localhost:3000/api/v1/wallet
 - An unconfirmed deposit stays pending and never changes the wallet; after `DEPOSIT_PENDING_TTL_SECONDS` (default 1 hour) it is marked `failed` automatically. A late verified success webhook can still credit an expired deposit. Duplicate success webhooks return 200 without a second credit.
 - Redis is never authoritative: cache failures degrade to PostgreSQL reads and every committed balance change invalidates the wallet key.
 - Notifications are post-commit BullMQ jobs, so email retry behavior cannot roll back or duplicate financial state.
+
+
 
 ## Evaluation scenarios and tests
 
@@ -142,6 +176,8 @@ Also run the static checks before deployment:
 npm run lint
 npm run build
 ```
+
+
 
 ## Operational notes
 

@@ -12,6 +12,7 @@ import { walletsModule } from './wallets/wallets.module';
 import { webhooksModule } from './webhooks/webhooks.module';
 import { withdrawalsModule } from './withdrawals/withdrawals.module';
 import { appController } from './app.controller';
+import { redisConnectionOptions } from './cache/redis-connection';
 
 const validateEnvironment = (values: Record<string, unknown>) => {
   const required = ['DATABASE_URL', 'JWT_SECRET'];
@@ -44,15 +45,7 @@ const validateEnvironment = (values: Record<string, unknown>) => {
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
-        connection: {
-          host: configService.get('REDIS_HOST', 'localhost'),
-          port: configService.get<number>('REDIS_PORT', 6379),
-          password: configService.get<string>('REDIS_PASSWORD') || undefined,
-          // Fail fast when Redis is unreachable (e.g. Render without a Redis add-on).
-          maxRetriesPerRequest: 1,
-          connectTimeout: 5_000,
-          enableOfflineQueue: false,
-        },
+        connection: redisConnectionOptions(configService),
       }),
     }),
     cacheModule,
